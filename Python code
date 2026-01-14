@@ -1,0 +1,316 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.model_selection import train_test_split
+
+# ------------------------------------------------------------------------------
+# LOAD DATA (20 variables)
+# ------------------------------------------------------------------------------
+healthy = pd.read_excel("Healthy - copia.xlsx").iloc[:, :20]
+bearings = pd.read_excel("Bearings_noisy - copia.xlsx").iloc[:, :20]
+waterpump = pd.read_excel("Waterpump_noisy - copia.xlsx").iloc[:, :20]
+radiator = pd.read_excel("Radiator_dirty - copia.xlsx").iloc[:, :20]
+valves   = pd.read_excel("Valves_dirty - copia.xlsx").iloc[:, :20]
+
+# ------------------------------------------------------------------------------
+# CREATE DATASETS (70% TRAIN, 30% VALIDATION - RANDOM)
+# ------------------------------------------------------------------------------
+def split_state(df):
+    train, val = train_test_split(
+        df,
+        test_size=0.30,
+        random_state=123, # fija semilla para reproducibilidad
+        shuffle=True
+    )
+    return train.reset_index(drop=True), val.reset_index(drop=True)
+
+healthy_train, healthy_val   = split_state(healthy)
+bear_train, bear_val         = split_state(bearings)
+pump_train, pump_val         = split_state(waterpump)
+rad_train, rad_val           = split_state(radiator)
+valv_train, valv_val         = split_state(valves)
+
+# ------------------------------------------------------------------------------
+# NORMALIZATION (USING ONLY HEALTHY TRAIN)
+# ------------------------------------------------------------------------------
+scaler = StandardScaler()
+h_train_norm = scaler.fit_transform(healthy_train)
+bear_train_norm = scaler.transform(bear_train)
+pump_train_norm = scaler.transform(pump_train)
+rad_train_norm  = scaler.transform(rad_train)
+valv_train_norm = scaler.transform(valv_train)
+
+h_val_norm   = scaler.transform(healthy_val)
+bear_val_norm = scaler.transform(bear_val)
+pump_val_norm = scaler.transform(pump_val)
+rad_val_norm  = scaler.transform(rad_val)
+valv_val_norm = scaler.transform(valv_val)
+
+def normalize_with_scaler(df):
+    return (df - scaler.mean_) / scaler.scale_
+
+bear_norm = normalize_with_scaler(bearings)
+pump_norm = normalize_with_scaler(waterpump)
+rad_norm  = normalize_with_scaler(radiator)
+valv_norm = normalize_with_scaler(valves)
+
+# ------------------------------------------------------------------------------
+# PCA TRAINING
+# ------------------------------------------------------------------------------
+pca = PCA(n_components=6)
+pca.fit(h_train_norm)
+
+components = pca.components_
+eigen      = pca.explained_variance_
+
+# ------------------------------------------------------------------------------
+# PROJECT DATASETS
+# ------------------------------------------------------------------------------
+
+h_scores    = pca.transform(h_train_norm)
+bear_scores = pca.transform(bear_train_norm)
+pump_scores = pca.transform(pump_train_norm)
+rad_scores  = pca.transform(rad_train_norm)
+valv_scores = pca.transform(valv_train_norm)
+
+# ------------------------------------------------------------------------------
+# HOTELLING T2 AND Q STATISTICS
+# ------------------------------------------------------------------------------
+def hotelling_T2(scores):
+    return np.sum((scores**2) / eigen, axis=1)
+
+def Q_stat(X_norm, scores):
+    X_recon = scores.dot(components)
+    return np.sum((X_norm - X_recon)**2, axis=1)
+
+T2_h_train = hotelling_T2(h_scores)
+Q_h_train  = Q_stat(h_train_norm, h_scores)
+
+T2_bear_train = hotelling_T2(bear_scores)
+Q_bear_train  = Q_stat(bear_train_norm, bear_scores)
+
+T2_pump_train = hotelling_T2(pump_scores)
+Q_pump_train  = Q_stat(pump_train_norm, pump_scores)
+
+T2_rad_train = hotelling_T2(rad_scores)
+Q_rad_train  = Q_stat(rad_train_norm, rad_scores)
+
+T2_valv_train = hotelling_T2(valv_scores)
+Q_valv_train  = Q_stat(valv_train_norm, valv_scores)
+
+
+alpha = 0.95  # nivel de confianza (95%)
+
+# Límites de control basados en los datos sanos de entrenamiento
+T2_limit = np.quantile(T2_h_train, alpha)
+Q_limit  = np.quantile(Q_h_train, alpha)
+
+# ------------------------------------------------------------------------------
+# CÁLCULO DE CENTROIDES EN PLANO (T², Q) - SOLO 70%
+# ------------------------------------------------------------------------------
+centroids = {
+    "healthy":   np.array([T2_h_train.mean(),   Q_h_train.mean()]),
+    "bearings":  np.array([T2_bear_train.mean(), Q_bear_train.mean()]),
+    "waterpump": np.array([T2_pump_train.mean(), Q_pump_train.mean()]),
+    "radiator":  np.array([T2_rad_train.mean(),  Q_rad_train.mean()]),
+    "valves":    np.array([T2_valv_train.mean(), Q_valv_train.mean()])
+}
+
+print("\nCENTROIDES (T², Q):")
+for k, v in centroids.items():
+    print(f"{k}: T2={v[0]:.3f}, Q={v[1]:.3f}")
+
+# ------------------------------------------------------------------------------
+# T² y Q - VALIDACIÓN (30%)
+# ------------------------------------------------------------------------------
+h_val_scores   = pca.transform(h_val_norm)
+bear_val_scores = pca.transform(bear_val_norm)
+pump_val_scores = pca.transform(pump_val_norm)
+rad_val_scores  = pca.transform(rad_val_norm)
+valv_val_scores = pca.transform(valv_val_norm)
+
+T2_h_val = hotelling_T2(h_val_scores)
+Q_h_val  = Q_stat(h_val_norm, h_val_scores)
+
+T2_bear_val = hotelling_T2(bear_val_scores)
+Q_bear_val  = Q_stat(bear_val_norm, bear_val_scores)
+
+T2_pump_val = hotelling_T2(pump_val_scores)
+Q_pump_val  = Q_stat(pump_val_norm, pump_val_scores)
+
+T2_rad_val = hotelling_T2(rad_val_scores)
+Q_rad_val  = Q_stat(rad_val_norm, rad_val_scores)
+
+T2_valv_val = hotelling_T2(valv_val_scores)
+Q_valv_val  = Q_stat(valv_val_norm, valv_val_scores)
+
+# ------------------------------------------------------------------------------
+# CLASIFICACIÓN POR DISTANCIA A CENTROIDES
+# ------------------------------------------------------------------------------
+def classify_by_centroid(T2, Q, centroids):
+    point = np.array([T2, Q])
+    dists = {}
+
+    for state, centroid in centroids.items():
+        dists[state] = np.linalg.norm(point - centroid)
+
+    label = min(dists, key=dists.get)
+    return label, dists
+
+# ------------------------------------------------------------------------------
+# VALIDACIÓN COMPLETA (30%) - RESULTADOS
+# ------------------------------------------------------------------------------
+def validate_state(T2_array, Q_array, true_label):
+    results = []
+
+    for i in range(len(T2_array)):
+        pred_label, dists = classify_by_centroid(T2_array[i], Q_array[i], centroids)
+
+        row = {
+            "sample_index": i,
+            "true_label": true_label,
+            "predicted_label": pred_label,
+            "T2": T2_array[i],
+            "Q": Q_array[i]
+        }
+
+        for state, dist in dists.items():
+            row[f"dist_{state}"] = dist
+
+        results.append(row)
+
+    return pd.DataFrame(results)
+
+df_h_val   = validate_state(T2_h_val,   Q_h_val,   "healthy")
+df_bear_val = validate_state(T2_bear_val, Q_bear_val, "bearings")
+df_pump_val = validate_state(T2_pump_val, Q_pump_val, "waterpump")
+df_rad_val  = validate_state(T2_rad_val,  Q_rad_val,  "radiator")
+df_valv_val = validate_state(T2_valv_val, Q_valv_val, "valves")
+
+df_validation = pd.concat([
+    df_h_val,
+    df_bear_val,
+    df_pump_val,
+    df_rad_val,
+    df_valv_val
+], axis=0).reset_index(drop=True)
+
+print("\nVALIDACIÓN (primeras filas):")
+print(df_validation.head())
+
+# ------------------------------------------------------------------------------
+# MATRIZ DE CONFUSIÓN
+# ------------------------------------------------------------------------------
+confusion = pd.crosstab(
+    df_validation["true_label"],
+    df_validation["predicted_label"],
+    rownames=["True"],
+    colnames=["Predicted"]
+)
+
+print("\nMATRIZ DE CONFUSIÓN:")
+print(confusion)
+
+confusion.to_excel("Matriz_Confusion_Centroides_Q_T2.xlsx")
+df_validation.to_excel("Resultados_Validacion_Centroides_Q_T2.xlsx", index=False)
+
+# ------------------------------------------------------------------------------
+# PLOTS
+# ------------------------------------------------------------------------------
+
+# PC1 vs PC2 (ALL STATES)
+plt.figure(figsize=(10,7))
+plt.scatter(h_scores[:,0], h_scores[:,1], color='blue', label='Healthy Train', s=20)
+plt.scatter(bear_scores[:,0], bear_scores[:,1], color='red', label='Bearings Noisy', s=20)
+plt.scatter(pump_scores[:,0], pump_scores[:,1], color='green', label='Water Pump Noisy', s=20)
+plt.scatter(rad_scores[:,0], rad_scores[:,1], color='purple', label='Radiator Dirty', s=20)
+plt.scatter(valv_scores[:,0], valv_scores[:,1], color='orange', label='Valves Dirty', s=20)
+plt.legend(); plt.grid(True)
+plt.title("PC1 vs PC2 - All States")
+plt.xlabel("PC1"); plt.ylabel("PC2")
+plt.show()
+
+# Loadings heatmap
+plt.figure(figsize=(12,6))
+plt.imshow(components[:6], aspect='auto', cmap='viridis')
+plt.colorbar(label="Loading")
+plt.xlabel("Variables")
+plt.ylabel("PCs (1-6)")
+plt.title("Loadings Heatmap - First 6 PCs")
+plt.show()
+
+# Hotelling T² comparison
+plt.figure(figsize=(12,6))
+plt.plot(T2_h_train, 'b.', label='Healthy Train')
+plt.plot(T2_bear_train, 'r.', label='Bearings')
+plt.plot(T2_pump_train, 'g.', label='Pump')
+plt.plot(T2_rad_train, 'm.', label='Radiator')
+plt.plot(T2_valv_train, 'y.', label='Valves')
+
+# Línea de límite
+plt.axhline(T2_limit, color='k', linestyle='--', label=f'T² limit ({int(alpha*100)}%)')
+#plt.xlim(0, 100)
+#plt.ylim(0, 100)
+plt.legend(); plt.grid(True)
+plt.title("Hotelling T² - All States")
+plt.xlabel("Sample Index"); plt.ylabel("T²")
+plt.show()
+
+# Q Statistic Comparison
+plt.figure(figsize=(12,6))
+plt.plot(Q_h_train, 'b.', label='Healthy Train')
+plt.plot(Q_bear_train, 'r.', label='Bearings')
+plt.plot(Q_pump_train, 'g.', label='Pump')
+plt.plot(Q_rad_train, 'm.', label='Radiator')
+plt.plot(Q_valv_train, 'y.', label='Valves')
+
+# Línea de límite
+plt.axhline(Q_limit, color='k', linestyle='--', label=f'Q limit ({int(alpha*100)}%)')
+#plt.xlim(0, 100)
+#plt.ylim(0, 50)
+plt.legend(); plt.grid(True)
+plt.title("Q Statistic - All States")
+plt.xlabel("Sample Index"); plt.ylabel("Q Statistic")
+plt.show()
+
+# ------------------------------------------------------------------------------
+# PLOT Q vs T² - TRAIN + CENTROIDES + VALIDACIÓN
+# ------------------------------------------------------------------------------
+plt.figure(figsize=(10,7))
+
+# TRAIN (70%)
+plt.scatter(T2_h_train, Q_h_train, c='blue',   s=20, label='Healthy Train')
+plt.scatter(T2_bear_train, Q_bear_train, c='red',    s=20, label='Bearings Train')
+plt.scatter(T2_pump_train, Q_pump_train, c='green',  s=20, label='Pump Train')
+plt.scatter(T2_rad_train,  Q_rad_train,  c='purple', s=20, label='Radiator Train')
+plt.scatter(T2_valv_train, Q_valv_train, c='orange', s=20, label='Valves Train')
+
+# VALID (30%)
+plt.scatter(T2_h_val, Q_h_val, c='blue',   marker='x', s=50, label='Healthy Val')
+plt.scatter(T2_bear_val, Q_bear_val, c='red',    marker='x', s=50, label='Bearings Val')
+plt.scatter(T2_pump_val, Q_pump_val, c='green',  marker='x', s=50, label='Pump Val')
+plt.scatter(T2_rad_val,  Q_rad_val,  c='purple', marker='x', s=50, label='Radiator Val')
+plt.scatter(T2_valv_val, Q_valv_val, c='orange', marker='x', s=50, label='Valves Val')
+
+# Centroides
+for state, centroid in centroids.items():
+    plt.scatter(centroid[0], centroid[1], c='black', s=150, marker='*')
+    plt.text(centroid[0]*1.02, centroid[1]*1.02, state, fontsize=9, fontweight='bold')
+
+x_min = min(T2_h_train.min(), T2_bear_train.min(), T2_pump_train.min(), T2_rad_train.min(), T2_valv_train.min())
+x_max = max(T2_h_train.max(), T2_bear_train.max(), T2_pump_train.max(), T2_rad_train.max(), T2_valv_train.max())
+
+y_min = min(Q_h_train.min(), Q_bear_train.min(), Q_pump_train.min(), Q_rad_train.min(), Q_valv_train.min())
+y_max = max(Q_h_train.max(), Q_bear_train.max(), Q_pump_train.max(), Q_rad_train.max(), Q_valv_train.max())
+
+#plt.xlim(x_min, x_max*0.1)   # 10% del rango
+#plt.ylim(y_min, y_max*0.01)  # 1% del rango
+
+plt.xlabel("T²")
+plt.ylabel("Q Statistic")
+plt.title("Q vs T² - Train (70%), Validation (30%) y Centroides")
+plt.grid(True)
+plt.legend()
+plt.show()
