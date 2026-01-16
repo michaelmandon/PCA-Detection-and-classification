@@ -1,18 +1,23 @@
+# Modelo multivariado con análisis pca para la detección y clasificación de
+# fallos
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
+from matplotlib.colors import LinearSegmentedColormap
+
 
 # ------------------------------------------------------------------------------
 # LOAD DATA (20 variables)
 # ------------------------------------------------------------------------------
-healthy = pd.read_excel("Healthy - copia.xlsx").iloc[:, :20]
-bearings = pd.read_excel("Bearings_noisy - copia.xlsx").iloc[:, :20]
-waterpump = pd.read_excel("Waterpump_noisy - copia.xlsx").iloc[:, :20]
-radiator = pd.read_excel("Radiator_dirty - copia.xlsx").iloc[:, :20]
-valves   = pd.read_excel("Valves_dirty - copia.xlsx").iloc[:, :20]
+healthy = pd.read_excel("Healthy.xlsx").iloc[:, :20]
+bearings = pd.read_excel("Bearings_noisy.xlsx").iloc[:, :20]
+waterpump = pd.read_excel("Waterpump_noisy.xlsx").iloc[:, :20]
+radiator = pd.read_excel("Radiator_dirty.xlsx").iloc[:, :20]
+valves   = pd.read_excel("Valves_dirty.xlsx").iloc[:, :20]
 
 # ------------------------------------------------------------------------------
 # CREATE DATASETS (70% TRAIN, 30% VALIDATION - RANDOM)
@@ -81,27 +86,28 @@ valv_scores = pca.transform(valv_train_norm)
 def hotelling_T2(scores):
     return np.sum((scores**2) / eigen, axis=1)
 
-def Q_stat(X_norm, scores):
-    X_recon = scores.dot(components)
-    return np.sum((X_norm - X_recon)**2, axis=1)
+def Q_stat(X_norm, scores, pca):
+    X_recon = scores @ pca.components_ + pca.mean_
+    residual = X_norm - X_recon
+    return np.sum(residual**2, axis=1)
 
 T2_h_train = hotelling_T2(h_scores)
-Q_h_train  = Q_stat(h_train_norm, h_scores)
+Q_h_train  = Q_stat(h_train_norm, h_scores, pca)
 
 T2_bear_train = hotelling_T2(bear_scores)
-Q_bear_train  = Q_stat(bear_train_norm, bear_scores)
+Q_bear_train  = Q_stat(bear_train_norm, bear_scores, pca)
 
 T2_pump_train = hotelling_T2(pump_scores)
-Q_pump_train  = Q_stat(pump_train_norm, pump_scores)
+Q_pump_train  = Q_stat(pump_train_norm, pump_scores, pca)
 
 T2_rad_train = hotelling_T2(rad_scores)
-Q_rad_train  = Q_stat(rad_train_norm, rad_scores)
+Q_rad_train  = Q_stat(rad_train_norm, rad_scores, pca)
 
 T2_valv_train = hotelling_T2(valv_scores)
-Q_valv_train  = Q_stat(valv_train_norm, valv_scores)
+Q_valv_train  = Q_stat(valv_train_norm, valv_scores, pca)
 
 
-alpha = 0.95  # nivel de confianza (95%)
+alpha = 0.96  # nivel de confianza (96%)
 
 # Límites de control basados en los datos sanos de entrenamiento
 T2_limit = np.quantile(T2_h_train, alpha)
@@ -132,19 +138,19 @@ rad_val_scores  = pca.transform(rad_val_norm)
 valv_val_scores = pca.transform(valv_val_norm)
 
 T2_h_val = hotelling_T2(h_val_scores)
-Q_h_val  = Q_stat(h_val_norm, h_val_scores)
+Q_h_val  = Q_stat(h_val_norm, h_val_scores, pca)
 
 T2_bear_val = hotelling_T2(bear_val_scores)
-Q_bear_val  = Q_stat(bear_val_norm, bear_val_scores)
+Q_bear_val  = Q_stat(bear_val_norm, bear_val_scores, pca)
 
 T2_pump_val = hotelling_T2(pump_val_scores)
-Q_pump_val  = Q_stat(pump_val_norm, pump_val_scores)
+Q_pump_val  = Q_stat(pump_val_norm, pump_val_scores, pca)
 
 T2_rad_val = hotelling_T2(rad_val_scores)
-Q_rad_val  = Q_stat(rad_val_norm, rad_val_scores)
+Q_rad_val  = Q_stat(rad_val_norm, rad_val_scores, pca)
 
 T2_valv_val = hotelling_T2(valv_val_scores)
-Q_valv_val  = Q_stat(valv_val_norm, valv_val_scores)
+Q_valv_val  = Q_stat(valv_val_norm, valv_val_scores, pca)
 
 # ------------------------------------------------------------------------------
 # CLASIFICACIÓN POR DISTANCIA A CENTROIDES
@@ -197,12 +203,15 @@ df_validation = pd.concat([
     df_valv_val
 ], axis=0).reset_index(drop=True)
 
-print("\nVALIDACIÓN (primeras filas):")
-print(df_validation.head())
+# ------------------------------------------------------------------------------
+# MATRIZ DE CONFUSIÓN - VISUAL (HEATMAP CON MATPLOTLIB)
+# ------------------------------------------------------------------------------
 
-# ------------------------------------------------------------------------------
-# MATRIZ DE CONFUSIÓN
-# ------------------------------------------------------------------------------
+# Colormap personalizado: blanco -> salmón -> naranja intenso
+colors = ["#fff5f0", "#fcbba1", "#fb6a4a", "#ef3b2c"]
+salmon_orange_cmap = LinearSegmentedColormap.from_list("salmon_orange", colors)
+
+
 confusion = pd.crosstab(
     df_validation["true_label"],
     df_validation["predicted_label"],
@@ -210,11 +219,26 @@ confusion = pd.crosstab(
     colnames=["Predicted"]
 )
 
-print("\nMATRIZ DE CONFUSIÓN:")
-print(confusion)
+plt.figure(figsize=(8,6))
+plt.imshow(confusion.values, cmap=salmon_orange_cmap)
+plt.colorbar(label='Número de muestras')
 
-confusion.to_excel("Matriz_Confusion_Centroides_Q_T2.xlsx")
-df_validation.to_excel("Resultados_Validacion_Centroides_Q_T2.xlsx", index=False)
+# Etiquetas
+plt.xticks(np.arange(len(confusion.columns)), confusion.columns, rotation=45)
+plt.yticks(np.arange(len(confusion.index)), confusion.index)
+
+plt.xlabel('Predicted Label')
+plt.ylabel('True Label')
+plt.title('Matriz de Confusión – Clasificación por Centroides (T²–Q)')
+
+# Valores dentro de cada celda
+for i in range(confusion.shape[0]):
+    for j in range(confusion.shape[1]):
+        value = confusion.values[i, j]
+        plt.text(j, i, value, ha='center', va='center', color='black', fontsize=11, fontweight='bold')
+
+plt.tight_layout()
+plt.show()
 
 # ------------------------------------------------------------------------------
 # PLOTS
@@ -268,8 +292,8 @@ plt.plot(Q_valv_train, 'y.', label='Valves')
 
 # Línea de límite
 plt.axhline(Q_limit, color='k', linestyle='--', label=f'Q limit ({int(alpha*100)}%)')
-#plt.xlim(0, 100)
-#plt.ylim(0, 50)
+#plt.xlim(0, 140)
+#plt.ylim(0, 10)
 plt.legend(); plt.grid(True)
 plt.title("Q Statistic - All States")
 plt.xlabel("Sample Index"); plt.ylabel("Q Statistic")
@@ -305,12 +329,48 @@ x_max = max(T2_h_train.max(), T2_bear_train.max(), T2_pump_train.max(), T2_rad_t
 y_min = min(Q_h_train.min(), Q_bear_train.min(), Q_pump_train.min(), Q_rad_train.min(), Q_valv_train.min())
 y_max = max(Q_h_train.max(), Q_bear_train.max(), Q_pump_train.max(), Q_rad_train.max(), Q_valv_train.max())
 
-#plt.xlim(x_min, x_max*0.1)   # 10% del rango
+# Límites de control
+plt.axvline(T2_limit, color='black', linestyle='--', linewidth=2, label='T² limit')
+plt.axhline(Q_limit,  color='black', linestyle='--', linewidth=2, label='Q limit')
+
+
+#plt.xlim(x_min, x_max*0.2)   # 20% del rango
 #plt.ylim(y_min, y_max*0.01)  # 1% del rango
 
 plt.xlabel("T²")
 plt.ylabel("Q Statistic")
 plt.title("Q vs T² - Train (70%), Validation (30%) y Centroides")
+plt.grid(True)
+plt.legend()
+plt.show()
+
+# ------------------------------------------------------------------
+# ANÁLISIS DE VARIANZA EXPLICADA - SELECCIÓN DE COMPONENTES
+# ------------------------------------------------------------------
+pca_full = PCA()
+pca_full.fit(h_train_norm)
+
+explained_variance_ratio = pca_full.explained_variance_ratio_
+cumulative_variance = np.cumsum(explained_variance_ratio)
+
+n_components = len(explained_variance_ratio)
+components_index = np.arange(1, n_components + 1)
+
+plt.figure(figsize=(10,6))
+
+#Varianza individual (barras)
+plt.bar(components_index, explained_variance_ratio, alpha=0.7, label='Varianza individual')
+
+#Varianza acumulada (línea)
+plt.plot(components_index, cumulative_variance, marker='o', label='Varianza acumulada')
+
+#Línea umbral 96%
+plt.axhline(0.96, linestyle='--', linewidth=2, label='Umbral 96%')
+
+plt.xlabel('Número de Componente Principal')
+plt.ylabel('Proporción de Varianza Explicada')
+plt.title('Análisis de Varianza Explicada por Componentes Principales')
+plt.xticks(components_index)
 plt.grid(True)
 plt.legend()
 plt.show()
